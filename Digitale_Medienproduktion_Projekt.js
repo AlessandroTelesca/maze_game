@@ -885,96 +885,66 @@ const Engine = (function () {
 					loadSplitFile('wasm_part', 3),
 					loadSplitFile('pck_part', 9)
 				]).then(function ([wasmBuffer, pckBuffer]) {
-					console.log('Files loaded, preparing module config...');
+					console.log('Files loaded, creating module...');
+					
+					// Create closure to capture PCK buffer
+					const pckData = {
+						buffer: pckBuffer,
+						path: pack
+					};
 					
 					// Create WASM blob
 					const wasmBlob = new Blob([wasmBuffer], { type: 'application/wasm' });
 					const wasmUrl = URL.createObjectURL(wasmBlob);
 					
-					// Fetch the WASM to create a response
 					return fetch(wasmUrl).then(function(response) {
 						URL.revokeObjectURL(wasmUrl);
 						
-						// Get the module config
 						const moduleConfig = me.config.getModuleConfig(exe, response);
 						
-						// Store PCK buffer to use in preRun
-						me._pckBuffer = pckBuffer;
-						me._pckPath = pack;
-						
-						// Add preRun callback to copy PCK BEFORE Godot starts
-						const originalPreRun = moduleConfig.preRun || [];
-						moduleConfig.preRun = [].concat(originalPreRun, function(module) {
-							console.log('Emscripten preRun: Copying PCK to filesystem...');
+						// Store PCK data in closure
+						moduleConfig.preRun = (moduleConfig.preRun || []).concat(function() {
+							console.log('preRun executing...');
 							
-							// Wait for FS to be ready
-							if (module.FS && me._pckBuffer) {
+							// Check if we can write to FS
+							if (this.FS && pckData.buffer) {
 								try {
-									// Write PCK to filesystem
-									module.FS.writeFile(me._pckPath, new Uint8Array(me._pckBuffer));
-									console.log('PCK written to filesystem in preRun');
+									console.log('Writing PCK to FS...');
+									this.FS.writeFile(pckData.path, new Uint8Array(pckData.buffer));
+									console.log('PCK written');
 									
-									// Verify it's there
-									const stats = module.FS.stat(me._pckPath);
-									console.log('PCK verified:', stats.size, 'bytes');
+									// Verify
+									const stats = this.FS.stat(pckData.path);
+									console.log('PCK size:', stats.size, 'bytes');
 									
-									// Clean up
-									me._pckBuffer = null;
-									me._pckPath = null;
+									// Clear the buffer to free memory
+									pckData.buffer = null;
 								} catch (error) {
-									console.error('Failed to write PCK in preRun:', error);
+									console.error('Failed to write PCK:', error);
 								}
 							} else {
-								console.warn('FS not ready or no PCK buffer in preRun');
+								console.warn('FS not ready:', !!this.FS, 'PCK buffer:', !!pckData.buffer);
 							}
 						});
 						
-						// Also add an onRuntimeInitialized callback as backup
-						moduleConfig.onRuntimeInitialized = function() {
-							console.log('Emscripten runtime initialized');
-							// Double-check PCK is there
-							if (module.FS) {
-								try {
-									const stats = module.FS.stat(pack);
-									console.log('Final PCK check:', stats.size, 'bytes');
-								} catch (e) {
-									console.error('PCK missing after initialization!');
-								}
-							}
-						};
-						
-						return moduleConfig;
+						return Godot(moduleConfig);
 					});
-				}).then(function(moduleConfig) {
-					console.log('Creating Godot module...');
-					
-					// Create the module
-					return Godot(moduleConfig);
 				}).then(function (module) {
-					console.log('Module created, setting up...');
+					console.log('Module created');
 					me.rtenv = module;
 					
 					// Initialize filesystem
-					const paths = me.config.persistentPaths;
-					return module['initFS'](paths);
+					return module['initFS'](me.config.persistentPaths);
 				}).then(function () {
-					console.log('Filesystem initialized, configuring engine...');
+					console.log('Configuring engine...');
 					
-					// Get Godot config
 					const config = me.config.getGodotConfig(function() {
-						// Cleanup callback
 						me.rtenv = null;
 					});
 					
-					// Apply config
 					me.rtenv['initConfig'](config);
-					
-					console.log('Starting engine with args:', me.config.args);
-					
-					// Start the engine
 					me.rtenv['callMain'](me.config.args);
 					
-					// Install service worker if needed
 					me.installServiceWorker();
 					
 					return Promise.resolve();
