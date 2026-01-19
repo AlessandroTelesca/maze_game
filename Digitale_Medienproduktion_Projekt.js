@@ -885,18 +885,34 @@ const Engine = (function () {
 					loadSplitFile('wasm_part', 3),
 					loadSplitFile('pck_part', 9)
 				]).then(function ([wasmBuffer, pckBuffer]) {
-					// Store WASM buffer for init method
-					me._wasmBuffer = wasmBuffer;
+					console.log('Files loaded, setting up engine...');
 					
-					// Preload PCK normally
-					return me.preloadFile(pckBuffer, pack);
-				}).then(function () {
-					// Initialize with the modified init method
+					// Store WASM buffer for init
+					me._wasmBuffer = wasmBuffer;
+					me._pckBuffer = pckBuffer;
+					
+					// Initialize with our WASM
 					return me.init(exe);
 				}).then(function () {
-					// Clean up
+					console.log('Engine initialized, copying PCK to filesystem...');
+					
+					// Copy PCK to filesystem BEFORE starting
+					if (me.rtenv && me.rtenv.copyToFS && me._pckBuffer) {
+						me.rtenv.copyToFS(pack, me._pckBuffer);
+						console.log('PCK copied to filesystem');
+						me._pckBuffer = null; // Free memory
+					} else {
+						console.error('Cannot copy PCK: rtenv or copyToFS not available');
+					}
+					
+					// Clean up WASM buffer
 					me._wasmBuffer = null;
+					
+					// Start the engine
 					return me.start.apply(me);
+				}).catch(function (error) {
+					console.error('Error in startGame:', error);
+					throw error;
 				});
 			},
 			/**
