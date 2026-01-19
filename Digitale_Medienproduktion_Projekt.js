@@ -835,19 +835,27 @@ const Engine = (function () {
 			 * @return {Promise} Promise that resolves once the game started.
 			 */
 			startGame: function (override) {
-				this.config.update(override);
-				// Add main-pack argument.
-				const exe = this.config.executable;
-				const pack = this.config.mainPack || `${exe}.pck`;
-				this.config.args = ['--main-pack', pack].concat(this.config.args);
-				// Start and init with execName as loadPath if not inited.
-				const me = this;
-				return Promise.all([
-					this.init(exe),
-					this.preloadFile(pack, pack),
-				]).then(function () {
-					return me.start.apply(me);
-				});
+			  this.config.update(override);
+			  // Add main-pack argument.
+			  const exe = this.config.executable;
+			  const pack = this.config.mainPack || `${exe}.pck`;
+			  this.config.args = ['--main-pack', pack].concat(this.config.args);
+			  
+			  // Define your GitHub URLs
+			  const wasmUrl = 'https://github.com/AlessandroTelesca/maze_game/releases/download/v1.0/Digitale_Medienproduktion_Projekt.wasm';
+			  const pckUrl = 'https://github.com/AlessandroTelesca/maze_game/releases/download/v1.0/Digitale_Medienproduktion_Projekt.pck';
+			  
+			  // Start and init with URLs
+			  const me = this;
+			  return Promise.all([
+			    this.preloadFile(wasmUrl, `${exe}.wasm`),  // Load WASM from GitHub
+			    this.preloadFile(pckUrl, pack),  // Load PCK from GitHub
+			  ]).then(function () {
+			    // Initialize without trying to load WASM again
+			    return me.init().then(function () {
+			      return me.start.apply(me);
+			    });
+			  });
 			},
 
 			/**
