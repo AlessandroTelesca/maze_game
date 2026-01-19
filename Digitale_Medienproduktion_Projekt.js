@@ -836,17 +836,84 @@ const Engine = (function () {
 			 */
 			startGame: function (override) {
 				this.config.update(override);
-				// Add main-pack argument.
 				const exe = this.config.executable;
 				const pack = this.config.mainPack || `${exe}.pck`;
 				this.config.args = ['--main-pack', pack].concat(this.config.args);
-				// Start and init with execName as loadPath if not inited.
+				
+				// Base URL for jsDelivr
+				const baseUrl = 'https://cdn.jsdelivr.net/gh/AlessandroTelesca/maze_game';
+				
+				// Load WASM (if it's small enough)
+				const wasmUrl = `${baseUrl}/Digitale_Medienproduktion_Projekt.wasm`;
+				
 				const me = this;
+				
+				// Function to load and combine split PCK
+				async function loadSplitPCK() {
+					// List all part files (adjust based on your actual split)
+					// You need to know how many parts you created
+					const partSuffixes = ['aa', 'ab']; // Add more if needed: 'ad', 'ae', etc.
+					
+					console.log('Loading split PCK parts:', partSuffixes);
+					
+					const buffers = [];
+					let totalLoaded = 0;
+					
+					for (const suffix of partSuffixes) {
+						const partUrl = `${baseUrl}/pck_part_${suffix}`;
+						console.log(`Loading part: ${partUrl}`);
+						
+						const response = await fetch(partUrl);
+						if (!response.ok) {
+							throw new Error(`Failed to load PCK part ${suffix}`);
+						}
+						
+						const buffer = await response.arrayBuffer();
+						buffers.push(buffer);
+						totalLoaded += buffer.byteLength;
+						
+						// Update progress if callback exists
+						if (me.config.onProgress) {
+							// We don't know total size, just show progress per part
+							me.config.onProgress(totalLoaded, 0);
+						}
+					}
+					
+					// Combine all buffers
+					const totalSize = buffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+					const combined = new Uint8Array(totalSize);
+					let offset = 0;
+					
+					for (const buffer of buffers) {
+						combined.set(new Uint8Array(buffer), offset);
+						offset += buffer.byteLength;
+					}
+					
+					console.log(`PCK loaded successfully: ${totalSize} bytes`);
+					return combined.buffer;
+				}
+				
+				// Main loading process
 				return Promise.all([
-					this.init(exe),
-					this.preloadFile(pack, pack),
+					// Load WASM normally
+					this.preloadFile(wasmUrl, `${exe}.wasm`),
+					
+					// Load and combine split PCK
+					loadSplitPCK().then(function(pckBuffer) {
+						// Store the combined PCK buffer
+						me._combinedPCK = pckBuffer;
+						return Promise.resolve();
+					})
 				]).then(function () {
-					return me.start.apply(me);
+					// Initialize engine
+					return me.init().then(function () {
+						// Copy combined PCK to filesystem
+						if (me._combinedPCK && me.rtenv) {
+							me.rtenv.copyToFS(pack, me._combinedPCK);
+							me._combinedPCK = null; // Free memory
+						}
+						return me.start.apply(me);
+					});
 				});
 			},
 
