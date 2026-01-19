@@ -162,6 +162,54 @@ const engine = new Engine(GODOT_CONFIG);
 		initializing = false;
 	}
 
+	// Preload and reassemble split files
+	async function preloadSplitFiles() {
+		try {
+			// Define the parts
+			const pckParts = ['pck_part_aa', 'pck_part_ab', 'pck_part_ac', 'pck_part_ad', 'pck_part_ae', 'pck_part_af', 'pck_part_ag', 'pck_part_ah', 'pck_part_ai'];
+			const wasmParts = ['wasm_part_aa', 'wasm_part_ab', 'wasm_part_ac'];
+			
+			// Fetch all parts in parallel
+			const [pckBuffers, wasmBuffers] = await Promise.all([
+				Promise.all(pckParts.map(part => fetch(part).then(r => {
+					if (!r.ok) throw new Error(`Failed to fetch ${part}`);
+					return r.arrayBuffer();
+				}))),
+				Promise.all(wasmParts.map(part => fetch(part).then(r => {
+					if (!r.ok) throw new Error(`Failed to fetch ${part}`);
+					return r.arrayBuffer();
+				})))
+			]);
+			
+			// Reassemble .pck file
+			const pckSize = pckBuffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+			const pckData = new Uint8Array(pckSize);
+			let offset = 0;
+			for (const buf of pckBuffers) {
+				pckData.set(new Uint8Array(buf), offset);
+				offset += buf.byteLength;
+			}
+			
+			// Reassemble .wasm file
+			const wasmSize = wasmBuffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+			const wasmData = new Uint8Array(wasmSize);
+			offset = 0;
+			for (const buf of wasmBuffers) {
+				wasmData.set(new Uint8Array(buf), offset);
+				offset += buf.byteLength;
+			}
+			
+			console.log(`Preloaded .pck: ${pckSize} bytes, .wasm: ${wasmSize} bytes`);
+			
+			return {
+				'Digitale_Medienproduktion_Projekt.pck': pckData.buffer,
+				'Digitale_Medienproduktion_Projekt.wasm': wasmData.buffer
+			};
+		} catch (err) {
+			throw new Error(`Failed to preload split files: ${err.message}`);
+		}
+	}
+
 	const missing = Engine.getMissingFeatures({
 		threads: GODOT_THREADS_ENABLED,
 	});
@@ -199,19 +247,30 @@ const engine = new Engine(GODOT_CONFIG);
 		}
 	} else {
 		setStatusMode('progress');
-		engine.startGame({
-			'onProgress': function (current, total) {
-				if (current > 0 && total > 0) {
-					statusProgress.value = current;
-					statusProgress.max = total;
-				} else {
-					statusProgress.removeAttribute('value');
-					statusProgress.removeAttribute('max');
-				}
-			},
-		}).then(() => {
-			setStatusMode('hidden');
-		}, displayFailureNotice);
+		
+		// Preload split files, then start the game
+		preloadSplitFiles()
+			.then((preloadedFiles) => {
+				// Preload the buffers with the engine
+				Object.entries(preloadedFiles).forEach(([filename, buffer]) => {
+					engine.preloadFile(filename, buffer);
+				});
+				
+				return engine.startGame({
+					'onProgress': function (current, total) {
+						if (current > 0 && total > 0) {
+							statusProgress.value = current;
+							statusProgress.max = total;
+						} else {
+							statusProgress.removeAttribute('value');
+							statusProgress.removeAttribute('max');
+						}
+					},
+				});
+			})
+			.then(() => {
+				setStatusMode('hidden');
+			}, displayFailureNotice);
 	}
 }());
 		</script>
