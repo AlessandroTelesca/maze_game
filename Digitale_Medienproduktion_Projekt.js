@@ -155,22 +155,21 @@ const Preloader = /** @constructor */ function () { // eslint-disable-line no-un
 	}
 
 	function loadFetch(file, tracker, fileSize, raw) {
-	  tracker[file] = {
-	    total: fileSize || 0,
-	    loaded: 0,
-	    done: false,
-	  };
-	  return fetch(file, { mode: 'cors' })  // Add CORS mode here
-	    .then(function (response) {
-	      if (!response.ok) {
-	        return Promise.reject(new Error(`Failed loading file '${file}'`));
-	      }
-	      const tr = getTrackedResponse(response, tracker[file]);
-	      if (raw) {
-	        return Promise.resolve(tr);
-	      }
-	      return tr.arrayBuffer();
-	    });
+		tracker[file] = {
+			total: fileSize || 0,
+			loaded: 0,
+			done: false,
+		};
+		return fetch(file).then(function (response) {
+			if (!response.ok) {
+				return Promise.reject(new Error(`Failed loading file '${file}'`));
+			}
+			const tr = getTrackedResponse(response, tracker[file]);
+			if (raw) {
+				return Promise.resolve(tr);
+			}
+			return tr.arrayBuffer();
+		});
 	}
 
 	function retry(func, attempts = 1) {
