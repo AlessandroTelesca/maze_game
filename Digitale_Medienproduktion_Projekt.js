@@ -835,109 +835,68 @@ const Engine = (function () {
 			 * @return {Promise} Promise that resolves once the game started.
 			 */
 			startGame: function (override) {
-				this.config.update(override);
-				const exe = this.config.executable;
-				const pack = this.config.mainPack || `${exe}.pck`;
-				this.config.args = ['--main-pack', pack].concat(this.config.args);
+			this.config.update(override);
+			const exe = this.config.executable;
+			const pack = this.config.mainPack || `${exe}.pck`;
+			this.config.args = ['--main-pack', pack].concat(this.config.args);
+			
+			const me = this;
+			
+			// Function to load and combine split files
+			async function loadSplitFile(prefix, expectedParts) {
+				console.log(`Loading split file: ${prefix} (${expectedParts} parts expected)`);
 				
-				// Base URL for jsDelivr
-				const baseUrl = 'https://cdn.jsdelivr.net/gh/AlessandroTelesca/maze_game';
+				const suffixes = ['aa', 'ab', 'ac', 'ad', 'ae', 'af', 'ag', 'ah', 'ai'];
+				const usedSuffixes = suffixes.slice(0, expectedParts);
 				
-				const me = this;
+				const buffers = [];
 				
-				// Generic function to load and combine split files
-				async function loadSplitFile(prefix, expectedParts) {
-					console.log(`Loading split file: ${prefix} (${expectedParts} parts expected)`);
+				for (const suffix of usedSuffixes) {
+					const partUrl = `https://cdn.jsdelivr.net/gh/AlessandroTelesca/maze_game/${prefix}_${suffix}`;
+					console.log(`Loading part: ${partUrl}`);
 					
-					const suffixes = ['aa', 'ab', 'ac', 'ad', 'ae', 'af', 'ag', 'ah', 'ai', 'aj'];
-					const usedSuffixes = suffixes.slice(0, expectedParts);
-					
-					const buffers = [];
-					let totalLoaded = 0;
-					
-					for (const suffix of usedSuffixes) {
-						const partUrl = `${baseUrl}/${prefix}_${suffix}`;
-						console.log(`Loading part: ${partUrl}`);
-						
-						try {
-							const response = await fetch(partUrl);
-							if (!response.ok) {
-								throw new Error(`Failed to load ${prefix} part ${suffix}: ${response.status}`);
-							}
-							
-							const buffer = await response.arrayBuffer();
-							buffers.push(buffer);
-							totalLoaded += buffer.byteLength;
-							
-							// Update progress
-							if (me.config.onProgress) {
-								me.config.onProgress(totalLoaded, 0);
-							}
-							
-						} catch (error) {
-							console.error(`Error loading ${prefix}_${suffix}:`, error);
-							throw error;
-						}
+					const response = await fetch(partUrl);
+					if (!response.ok) {
+						throw new Error(`Failed to load ${prefix} part ${suffix}`);
 					}
 					
-					// Combine all buffers
-					const totalSize = buffers.reduce((sum, buf) => sum + buf.byteLength, 0);
-					const combined = new Uint8Array(totalSize);
-					let offset = 0;
-					
-					for (const buffer of buffers) {
-						combined.set(new Uint8Array(buffer), offset);
-						offset += buffer.length;
-					}
-					
-					console.log(`${prefix} loaded successfully: ${totalSize} bytes`);
-					return combined.buffer;
+					const buffer = await response.arrayBuffer();
+					buffers.push(buffer);
 				}
 				
-				// Main loading process
-				return Promise.all([
-					// Load and combine WASM parts (3 parts: aa, ab, ac)
-					loadSplitFile('wasm_part', 3).then(function(wasmBuffer) {
-						me._wasmBuffer = wasmBuffer;
-						return Promise.resolve();
-					}),
-					
-					// Load and combine PCK parts (9 parts: aa through ai)
-					loadSplitFile('pck_part', 9).then(function(pckBuffer) {
-						me._pckBuffer = pckBuffer;
-						return Promise.resolve();
-					})
-				]).then(function () {
-					// Initialize engine with combined WASM
-					if (!me._wasmBuffer) {
-						throw new Error('WASM buffer not loaded');
-					}
-					
-					// We need to override the Engine's loading mechanism
-					// since we have the WASM in memory
-					return new Promise(function(resolve, reject) {
-						// Create a blob URL for the WASM
-						const wasmBlob = new Blob([me._wasmBuffer], { type: 'application/wasm' });
-						const wasmUrl = URL.createObjectURL(wasmBlob);
-						
-						// Load the engine with our blob URL
-						Engine.load(wasmUrl).then(function(response) {
-							me.init().then(function() {
-								// Copy PCK to filesystem
-								if (me._pckBuffer && me.rtenv) {
-									me.rtenv.copyToFS(pack, me._pckBuffer);
-									me._pckBuffer = null; // Free memory
-								}
-								me._wasmBuffer = null; // Free memory
-								URL.revokeObjectURL(wasmUrl); // Clean up blob URL
-								
-								return me.start.apply(me);
-							}).then(resolve).catch(reject);
-						}).catch(reject);
-					});
+				// Combine all buffers
+				const totalSize = buffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+				const combined = new Uint8Array(totalSize);
+				let offset = 0;
+				
+				for (const buffer of buffers) {
+					combined.set(new Uint8Array(buffer), offset);
+					offset += buffer.byteLength;
+				}
+				
+				console.log(`${prefix} loaded successfully: ${totalSize} bytes`);
+				return combined.buffer;
+			}
+			
+			// Main loading process - FIXED VERSION
+			return Promise.all([
+				loadSplitFile('wasm_part', 3),
+				loadSplitFile('pck_part', 9)
+			]).then(function (results) {
+				const [wasmBuffer, pckBuffer] = results;
+				
+				// Store in preloadedFiles array so the engine can find them
+				me.preloadedFiles.push(
+					{ path: `${exe}.wasm`, buffer: wasmBuffer },
+					{ path: pack, buffer: pckBuffer }
+				);
+				
+				// Initialize with the executable name (not a blob URL)
+				return me.init(exe).then(function () {
+					return me.start.apply(me);
 				});
-			},
-
+			});
+		},
 			/**
 			 * Create a file at the specified ``path`` with the passed as ``buffer`` in the instance's file system.
 			 *
