@@ -885,34 +885,99 @@ const Engine = (function () {
 					loadSplitFile('wasm_part', 3),
 					loadSplitFile('pck_part', 9)
 				]).then(function ([wasmBuffer, pckBuffer]) {
-					console.log('Files loaded, setting up engine...');
+					console.log('Files loaded, preparing module config...');
 					
-					// Store WASM buffer for init
-					me._wasmBuffer = wasmBuffer;
-					me._pckBuffer = pckBuffer;
+					// Create WASM blob
+					const wasmBlob = new Blob([wasmBuffer], { type: 'application/wasm' });
+					const wasmUrl = URL.createObjectURL(wasmBlob);
 					
-					// Initialize with our WASM
-					return me.init(exe);
+					// Fetch the WASM to create a response
+					return fetch(wasmUrl).then(function(response) {
+						URL.revokeObjectURL(wasmUrl);
+						
+						// Get the module config
+						const moduleConfig = me.config.getModuleConfig(exe, response);
+						
+						// Store PCK buffer to use in preRun
+						me._pckBuffer = pckBuffer;
+						me._pckPath = pack;
+						
+						// Add preRun callback to copy PCK BEFORE Godot starts
+						const originalPreRun = moduleConfig.preRun || [];
+						moduleConfig.preRun = [].concat(originalPreRun, function(module) {
+							console.log('Emscripten preRun: Copying PCK to filesystem...');
+							
+							// Wait for FS to be ready
+							if (module.FS && me._pckBuffer) {
+								try {
+									// Write PCK to filesystem
+									module.FS.writeFile(me._pckPath, new Uint8Array(me._pckBuffer));
+									console.log('PCK written to filesystem in preRun');
+									
+									// Verify it's there
+									const stats = module.FS.stat(me._pckPath);
+									console.log('PCK verified:', stats.size, 'bytes');
+									
+									// Clean up
+									me._pckBuffer = null;
+									me._pckPath = null;
+								} catch (error) {
+									console.error('Failed to write PCK in preRun:', error);
+								}
+							} else {
+								console.warn('FS not ready or no PCK buffer in preRun');
+							}
+						});
+						
+						// Also add an onRuntimeInitialized callback as backup
+						moduleConfig.onRuntimeInitialized = function() {
+							console.log('Emscripten runtime initialized');
+							// Double-check PCK is there
+							if (module.FS) {
+								try {
+									const stats = module.FS.stat(pack);
+									console.log('Final PCK check:', stats.size, 'bytes');
+								} catch (e) {
+									console.error('PCK missing after initialization!');
+								}
+							}
+						};
+						
+						return moduleConfig;
+					});
+				}).then(function(moduleConfig) {
+					console.log('Creating Godot module...');
+					
+					// Create the module
+					return Godot(moduleConfig);
+				}).then(function (module) {
+					console.log('Module created, setting up...');
+					me.rtenv = module;
+					
+					// Initialize filesystem
+					const paths = me.config.persistentPaths;
+					return module['initFS'](paths);
 				}).then(function () {
-					console.log('Engine initialized, copying PCK to filesystem...');
+					console.log('Filesystem initialized, configuring engine...');
 					
-					// Copy PCK to filesystem BEFORE starting
-					if (me.rtenv && me.rtenv.copyToFS && me._pckBuffer) {
-						me.rtenv.copyToFS(pack, me._pckBuffer);
-						console.log('PCK copied to filesystem');
-						me._pckBuffer = null; // Free memory
-					} else {
-						console.error('Cannot copy PCK: rtenv or copyToFS not available');
-					}
+					// Get Godot config
+					const config = me.config.getGodotConfig(function() {
+						// Cleanup callback
+						me.rtenv = null;
+					});
 					
-					// Clean up WASM buffer
-					me._wasmBuffer = null;
+					// Apply config
+					me.rtenv['initConfig'](config);
+					
+					console.log('Starting engine with args:', me.config.args);
 					
 					// Start the engine
-					return me.start.apply(me);
-				}).catch(function (error) {
-					console.error('Error in startGame:', error);
-					throw error;
+					me.rtenv['callMain'](me.config.args);
+					
+					// Install service worker if needed
+					me.installServiceWorker();
+					
+					return Promise.resolve();
 				});
 			},
 			/**
