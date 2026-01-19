@@ -719,18 +719,32 @@ const Engine = (function () {
 				if (initPromise) {
 					return initPromise;
 				}
-				if (loadPromise == null) {
+				
+				// Check if we have a preloaded WASM buffer
+				if (this._wasmBuffer && basePath === this.config.executable) {
+					console.log('Using preloaded WASM buffer for initialization');
+					
+					// Create a blob URL from our buffer
+					const wasmBlob = new Blob([this._wasmBuffer], { type: 'application/wasm' });
+					const wasmUrl = URL.createObjectURL(wasmBlob);
+					
+					// Use the blob URL as if it were a remote file
+					loadPath = wasmUrl;
+					loadPromise = fetch(wasmUrl).then(response => response);
+					
+				} else if (loadPromise == null) {
 					if (!basePath) {
 						initPromise = Promise.reject(new Error('A base path must be provided when calling `init` and the engine is not loaded.'));
 						return initPromise;
 					}
-					Engine.load(basePath, this.config.fileSizes[`${basePath}.wasm`]);
+					loadPath = basePath;
+					loadPromise = preloader.loadPromise(`${loadPath}.wasm`, this.config.fileSizes[`${basePath}.wasm`], true);
 				}
+				
+				requestAnimationFrame(preloader.animateProgress);
+				
 				const me = this;
 				function doInit(promise) {
-					// Care! Promise chaining is bogus with old emscripten versions.
-					// This caused a regression with the Mono build (which uses an older emscripten version).
-					// Make sure to test that when refactoring.
 					return new Promise(function (resolve, reject) {
 						promise.then(function (response) {
 							const cloned = new Response(response.clone().body, { 'headers': [['content-type', 'application/wasm']] });
@@ -747,6 +761,7 @@ const Engine = (function () {
 						});
 					});
 				}
+				
 				preloader.setProgressFunc(this.config.onProgress);
 				initPromise = doInit(loadPromise);
 				return initPromise;
@@ -842,7 +857,6 @@ const Engine = (function () {
 				
 				const me = this;
 				
-				// Function to load and combine parts
 				async function loadSplitFile(prefix, partCount) {
 					const suffixes = ['aa', 'ab', 'ac', 'ad', 'ae', 'af', 'ag', 'ah', 'ai'];
 					const parts = [];
@@ -866,21 +880,23 @@ const Engine = (function () {
 					return combined.buffer;
 				}
 				
-				// Load WASM and PCK
+				// Load files
 				return Promise.all([
 					loadSplitFile('wasm_part', 3),
 					loadSplitFile('pck_part', 9)
 				]).then(function ([wasmBuffer, pckBuffer]) {
-					// Preload combined files using the existing method
-					return Promise.all([
-						me.preloadFile(wasmBuffer, `${exe}.wasm`),
-						me.preloadFile(pckBuffer, pack)
-					]);
+					// Store WASM buffer for init method
+					me._wasmBuffer = wasmBuffer;
+					
+					// Preload PCK normally
+					return me.preloadFile(pckBuffer, pack);
 				}).then(function () {
-					// Initialize and start
-					return me.init(exe).then(function () {
-						return me.start.apply(me);
-					});
+					// Initialize with the modified init method
+					return me.init(exe);
+				}).then(function () {
+					// Clean up
+					me._wasmBuffer = null;
+					return me.start.apply(me);
 				});
 			},
 			/**
