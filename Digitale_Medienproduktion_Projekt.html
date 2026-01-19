@@ -248,30 +248,13 @@ const engine = new Engine(GODOT_CONFIG);
 	} else {
 		setStatusMode('progress');
 		
-		// Preload split files, register service worker, then start the game
-		Promise.all([
-			preloadSplitFiles(),
-			// Register service worker to serve preloaded files
-			'serviceWorker' in navigator ? navigator.serviceWorker.register('service-worker.js').catch(err => {
-				console.warn('Service Worker registration failed:', err);
-				return null;
-			}) : Promise.resolve(null)
-		])
-			.then(([preloadedFiles, swRegistration]) => {
-				// Send preloaded files to service worker
-				if (swRegistration && swRegistration.active) {
-					swRegistration.active.postMessage({
-						type: 'PRELOAD_FILES',
-						files: preloadedFiles
-					});
-					console.log('Sent preloaded files to Service Worker');
-				} else if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-					navigator.serviceWorker.controller.postMessage({
-						type: 'PRELOAD_FILES',
-						files: preloadedFiles
-					});
-					console.log('Sent preloaded files to active Service Worker controller');
-				}
+		// Preload split files, then start the game
+		preloadSplitFiles()
+			.then((preloadedFiles) => {
+				// Preload the buffers with the engine
+				Object.entries(preloadedFiles).forEach(([filename, buffer]) => {
+					engine.preloadFile(filename, buffer);
+				});
 				
 				return engine.startGame({
 					'onProgress': function (current, total) {
