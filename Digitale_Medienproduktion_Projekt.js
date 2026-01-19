@@ -719,32 +719,18 @@ const Engine = (function () {
 				if (initPromise) {
 					return initPromise;
 				}
-				
-				// Check if we have a preloaded WASM buffer
-				if (this._wasmBuffer && basePath === this.config.executable) {
-					console.log('Using preloaded WASM buffer for initialization');
-					
-					// Create a blob URL from our buffer
-					const wasmBlob = new Blob([this._wasmBuffer], { type: 'application/wasm' });
-					const wasmUrl = URL.createObjectURL(wasmBlob);
-					
-					// Use the blob URL as if it were a remote file
-					loadPath = wasmUrl;
-					loadPromise = fetch(wasmUrl).then(response => response);
-					
-				} else if (loadPromise == null) {
+				if (loadPromise == null) {
 					if (!basePath) {
 						initPromise = Promise.reject(new Error('A base path must be provided when calling `init` and the engine is not loaded.'));
 						return initPromise;
 					}
-					loadPath = basePath;
-					loadPromise = preloader.loadPromise(`${loadPath}.wasm`, this.config.fileSizes[`${basePath}.wasm`], true);
+					Engine.load(basePath, this.config.fileSizes[`${basePath}.wasm`]);
 				}
-				
-				requestAnimationFrame(preloader.animateProgress);
-				
 				const me = this;
 				function doInit(promise) {
+					// Care! Promise chaining is bogus with old emscripten versions.
+					// This caused a regression with the Mono build (which uses an older emscripten version).
+					// Make sure to test that when refactoring.
 					return new Promise(function (resolve, reject) {
 						promise.then(function (response) {
 							const cloned = new Response(response.clone().body, { 'headers': [['content-type', 'application/wasm']] });
@@ -761,7 +747,6 @@ const Engine = (function () {
 						});
 					});
 				}
-				
 				preloader.setProgressFunc(this.config.onProgress);
 				initPromise = doInit(loadPromise);
 				return initPromise;
@@ -849,176 +834,22 @@ const Engine = (function () {
 			 * @param {EngineConfig} override An optional configuration override.
 			 * @return {Promise} Promise that resolves once the game started.
 			 */
-startGame: function (override) {
-    this.config.update(override);
-    const exe = this.config.executable;
-    const pack = this.config.mainPack || `${exe}.pck`;
-    this.config.args = ['--main-pack', pack].concat(this.config.args);
-    
-    const me = this;
-    
-    async function loadSplitFile(prefix, partCount) {
-        const suffixes = ['aa', 'ab', 'ac', 'ad', 'ae', 'af', 'ag', 'ah', 'ai'];
-        const parts = [];
-        
-        for (let i = 0; i < partCount; i++) {
-            // Add timestamp to bypass service worker cache
-            const url = `https://cdn.jsdelivr.net/gh/AlessandroTelesca/maze_game/${prefix}_${suffixes[i]}?t=${Date.now()}`;
-            const response = await fetch(url);
-            parts.push(await response.arrayBuffer());
-        }
-        
-        // Combine
-        const totalSize = parts.reduce((sum, part) => sum + part.byteLength, 0);
-        const combined = new Uint8Array(totalSize);
-        let offset = 0;
-        
-        parts.forEach(part => {
-            combined.set(new Uint8Array(part), offset);
-            offset += part.byteLength;
-        });
-        
-        return combined.buffer;
-    }
-    
-    // Load files
-    return Promise.all([
-        loadSplitFile('wasm_part', 3),
-        loadSplitFile('pck_part', 9)
-    ]).then(function ([wasmBuffer, pckBuffer]) {
-        console.log('Files loaded, preparing module config...');
-        
-        // Create WASM blob
-        const wasmBlob = new Blob([wasmBuffer], { type: 'application/wasm' });
-        const wasmUrl = URL.createObjectURL(wasmBlob);
-        
-        // Fetch the WASM to create a response
-        return fetch(wasmUrl).then(function(response) {
-            URL.revokeObjectURL(wasmUrl);
-            
-            // Get the module config
-            const moduleConfig = me.config.getModuleConfig(exe, response);
-            
-            // Store PCK data in the module config so we can access it later
-            const pckData = {
-                buffer: pckBuffer,
-                path: pack
-            };
-            
-            // Override the preRun to ensure we write the PCK when FS is ready
-            const originalPreRun = moduleConfig.preRun || [];
-            moduleConfig.preRun = [].concat(originalPreRun, function() {
-                console.log('preRun: Checking FS availability...');
-                
-                // The module object is available as 'this' in preRun
-                const module = this;
-                
-                // Wait a bit for FS to be fully initialized
-                const checkFS = function() {
-                    if (module.FS && pckData.buffer) {
-                        console.log('FS is ready, writing PCK...');
-                        try {
-                            // Write PCK to filesystem
-                            module.FS.writeFile(pckData.path, new Uint8Array(pckData.buffer));
-                            console.log('PCK written successfully:', pckData.path);
-                            
-                            // Verify
-                            const stats = module.FS.stat(pckData.path);
-                            console.log('PCK verified:', stats.size, 'bytes');
-                            
-                            // Check ZIP header
-                            const fileData = module.FS.readFile(pckData.path);
-                            const header = new Uint8Array(fileData.buffer, 0, 4);
-                            console.log('PCK header:', String.fromCharCode(...header));
-                            
-                            // Clear buffer to free memory
-                            pckData.buffer = null;
-                            
-                            // Also write it to the root directory as backup
-                            const fileNameOnly = pckData.path.split('/').pop();
-                            if (fileNameOnly !== pckData.path) {
-                                module.FS.writeFile('/' + fileNameOnly, new Uint8Array(fileData));
-                                console.log('PCK also written to root as backup:', '/' + fileNameOnly);
-                            }
-                        } catch (error) {
-                            console.error('Failed to write PCK:', error);
-                        }
-                    } else {
-                        // FS not ready yet, check again
-                        if (pckData.buffer) {
-                            console.log('FS not ready, checking again...');
-                            setTimeout(checkFS, 100);
-                        }
-                    }
-                };
-                
-                // Start checking
-                checkFS();
-            });
-            
-            return moduleConfig;
-        });
-    }).then(function(moduleConfig) {
-        console.log('Creating Godot module...');
-        
-        // Create the module
-        return Godot(moduleConfig);
-    }).then(function (module) {
-        console.log('Module created, setting up...');
-        me.rtenv = module;
-        
-        // Store the module for later access
-        window.godotModule = module;
-        
-        // Initialize filesystem
-        const paths = me.config.persistentPaths;
-        return module['initFS'](paths);
-    }).then(function () {
-        console.log('Filesystem initialized, configuring engine...');
-        
-        // Double-check PCK is in filesystem before starting engine
-        if (window.godotModule && window.godotModule.FS) {
-            try {
-                const stats = window.godotModule.FS.stat(pack);
-                console.log('✓ PCK confirmed in FS before engine start:', stats.size, 'bytes');
-            } catch (e) {
-                console.error('✗ PCK missing before engine start! Trying to write now...');
-                
-                // Try to write it directly
-                if (me._pckBuffer) {
-                    window.godotModule.FS.writeFile(pack, new Uint8Array(me._pckBuffer));
-                    console.log('PCK written late but hopefully in time');
-                }
-            }
-        }
-        
-        // Get Godot config
-        const config = me.config.getGodotConfig(function() {
-            // Cleanup callback
-            me.rtenv = null;
-            window.godotModule = null;
-        });
-        
-        // Apply config
-        me.rtenv['initConfig'](config);
-        
-        console.log('Starting engine with args:', me.config.args);
-        
-        // Add a small delay to ensure filesystem is ready
-        setTimeout(function() {
-            // Start the engine
-            me.rtenv['callMain'](me.config.args);
-        }, 500);
-        
-        // Install service worker if needed
-        me.installServiceWorker();
-        
-        return Promise.resolve();
-    }).catch(function(error) {
-        console.error('Error in startGame:', error);
-        throw error;
-    });
-},
+			startGame: function (override) {
+				this.config.update(override);
+				// Add main-pack argument.
+				const exe = this.config.executable;
+				const pack = this.config.mainPack || `${exe}.pck`;
+				this.config.args = ['--main-pack', pack].concat(this.config.args);
+				// Start and init with execName as loadPath if not inited.
+				const me = this;
+				return Promise.all([
+					this.init(exe),
+					this.preloadFile(pack, pack),
+				]).then(function () {
+					return me.start.apply(me);
+				});
+			},
+
 			/**
 			 * Create a file at the specified ``path`` with the passed as ``buffer`` in the instance's file system.
 			 *
