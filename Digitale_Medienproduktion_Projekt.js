@@ -871,11 +871,11 @@ const Engine = (function () {
 					loadSplitFile('wasm_part', 3),
 					loadSplitFile('pck_part', 9)
 				]).then(function ([wasmBuffer, pckBuffer]) {
-					// Feed the combined wasm directly to the engine to avoid an extra fetch.
-					loadPath = exe;
-					loadPromise = Promise.resolve(new Response(wasmBuffer, { 'headers': [['content-type', 'application/wasm']] }));
-					// Preload the packed game data into the virtual FS.
-					return me.preloadFile(pckBuffer, pack);
+					// Preload combined files using the existing method
+					return Promise.all([
+						me.preloadFile(wasmBuffer, `${exe}.wasm`),
+						me.preloadFile(pckBuffer, pack)
+					]);
 				}).then(function () {
 					// Initialize and start
 					return me.init(exe).then(function () {
